@@ -1,14 +1,17 @@
-const CACHE_NAME = "fairway-caddie-shell-v9";
+const CACHE_NAME = "fairway-caddie-shell-v12";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./map-upgrade.css",
   "./preview-3d.css",
+  "./preview-fallback.css",
   "./map-bootstrap.js",
   "./app.js",
   "./map-upgrade.js",
+  "./preview-bootstrap.js",
   "./preview-3d.js",
+  "./preview-leaflet.js",
   "./manifest.webmanifest"
 ];
 
@@ -31,9 +34,10 @@ self.addEventListener("activate", event => {
 self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
+
   if (url.origin === self.location.origin) {
     event.respondWith(
-      fetch(event.request)
+      fetch(event.request, { cache: "no-store" })
         .then(response => {
           const copy = response.clone();
           caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy));
