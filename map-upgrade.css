@@ -1,0 +1,53 @@
+#map {
+  height: min(58vh, 590px);
+  min-height: 420px;
+}
+
+.green-marker {
+  background: #ffcc33 !important;
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.34), 0 3px 10px rgba(0, 0, 0, 0.45) !important;
+}
+
+.user-location {
+  width: 24px;
+  height: 24px;
+  border-width: 4px;
+  box-shadow: 0 0 0 4px rgba(25, 118, 210, 0.34), 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.leaflet-control-scale-line {
+  border-color: rgba(255, 255, 255, 0.96);
+  color: white;
+  background: rgba(0, 0, 0, 0.52);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
+}
+
+.leaflet-control-attribution {
+  max-width: 72vw;
+  background: rgba(255, 255, 255, 0.84) !important;
+  font-size: 9px !important;
+}
+
+@media (max-width: 430px) {
+  #map {
+    height: 56vh;
+    min-height: 400px;
+  }
+
+  .map-actions {
+    right: 7px;
+    bottom: 9px;
+    gap: 5px;
+  }
+
+  .map-chip {
+    min-height: 38px;
+    padding: 7px 10px;
+    font-size: 0.76rem;
+  }
+
+  .round-button {
+    width: 40px;
+    height: 40px;
+  }
+}
