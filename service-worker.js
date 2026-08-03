@@ -1,9 +1,12 @@
-const CACHE_NAME = "fairway-caddie-shell-v4";
+const CACHE_NAME = "fairway-caddie-shell-v7";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
+  "./map-upgrade.css",
+  "./map-bootstrap.js",
   "./app.js",
+  "./map-upgrade.js",
   "./manifest.webmanifest"
 ];
 
