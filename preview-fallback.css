@@ -1,0 +1,23 @@
+#preview3dMap {
+  transition: transform 260ms ease, border-radius 260ms ease;
+  transform-origin: 50% 100%;
+}
+
+#preview3dMap.fallback-perspective {
+  transform: perspective(1100px) rotateX(34deg) scale(1.08);
+  border-radius: 18px;
+}
+
+.preview-map-shell:has(#preview3dMap.fallback-perspective) {
+  background: #0b1710;
+}
+
+#preview3dMap .leaflet-control-container {
+  font-size: 12px;
+}
+
+@media (max-width: 520px) {
+  #preview3dMap.fallback-perspective {
+    transform: perspective(900px) rotateX(28deg) scale(1.06);
+  }
+}
