@@ -30,6 +30,13 @@ Your starting club ranges are already included:
 - Gap Wedge: 105–120 yd
 - 56° Wedge: 10–100 yd
 
+
+## Important: the downloaded HTML preview is not the running app
+
+Opening `index.html` inside ChatGPT's file preview, a ZIP preview, or some phone file viewers may show the screen but block JavaScript. In that case the buttons and tabs will not respond.
+
+The app must be opened from an HTTPS web address after it is published through GitHub Pages or another HTTPS host.
+
 ## Test on a computer
 
 From this folder:

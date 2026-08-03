@@ -99,6 +99,30 @@ main {
   display: block;
 }
 
+
+.course-picker {
+  margin-bottom: 9px;
+}
+
+.course-picker label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.course-picker span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.course-picker select {
+  min-height: 48px;
+  border-color: #b8cdc0;
+  font-weight: 800;
+}
+
 .hole-bar {
   display: grid;
   grid-template-columns: 0.8fr 0.7fr 1.3fr;
