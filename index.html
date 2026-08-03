@@ -7,13 +7,15 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Fairway Caddie">
-  <meta name="description" content="A personal GPS golf caddie with club recommendations and shot tracking.">
+  <meta name="description" content="A personal GPS golf caddie with live and 3D preview modes.">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
   <link rel="icon" href="./icons/icon-192.png">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
   <link rel="stylesheet" href="./styles.css">
   <link rel="stylesheet" href="./map-upgrade.css">
+  <link rel="stylesheet" href="./preview-3d.css">
   <title>Fairway Caddie</title>
 </head>
 <body>
@@ -31,36 +33,82 @@
         <div class="course-picker">
           <label><span>Course</span><select id="courseSelect" aria-label="Golf course"><option value="lakeview">Lakeview Golf Course — Mississauga</option><option value="custom">Custom / Other course</option></select></label>
         </div>
+
+        <div class="mode-switch" role="group" aria-label="Round mode">
+          <button id="liveModeButton" class="mode-button" type="button">Live GPS</button>
+          <button id="previewModeButton" class="mode-button" type="button">Preview 3D</button>
+        </div>
+
         <div class="hole-bar">
           <label><span>Hole</span><select id="holeNumber" aria-label="Hole number"></select></label>
           <label><span>Par</span><select id="holePar" aria-label="Par"><option value="3">3</option><option value="4" selected>4</option><option value="5">5</option></select></label>
           <label><span>Tee</span><select id="teeName" aria-label="Tee"><option>White</option><option>Blue</option><option>Black</option><option>Red</option><option>Gold</option></select></label>
         </div>
 
-        <div class="metric-grid">
-          <article class="metric"><span>To green</span><strong id="distanceToGreen">—</strong><small>yards</small></article>
-          <article class="metric"><span>Recommended</span><strong id="recommendedClub">Set green</strong><small id="recommendationReason">Tap the map to mark the target</small></article>
-          <article class="metric"><span>GPS accuracy</span><strong id="gpsAccuracy">—</strong><small>metres</small></article>
-        </div>
-
-        <div class="map-shell">
-          <div id="map" aria-label="Live golf course map"><div id="mapLoading" class="map-loading"><strong>Loading satellite course map…</strong><span>The map requires internet access and must be opened from the published HTTPS app.</span></div></div>
-          <div class="map-actions">
-            <button id="mapStyleButton" class="map-chip secondary" type="button">Street</button>
-            <button id="locateButton" class="round-button" type="button" title="Centre map on your location">◎</button>
-            <button id="setGreenButton" class="map-chip" type="button">Set green</button>
-            <button id="clearGreenButton" class="map-chip secondary" type="button">Clear</button>
+        <div id="liveRoundRegion">
+          <div class="metric-grid">
+            <article class="metric"><span>To green</span><strong id="distanceToGreen">—</strong><small>yards</small></article>
+            <article class="metric"><span>Recommended</span><strong id="recommendedClub">Set green</strong><small id="recommendationReason">Tap the map to mark the target</small></article>
+            <article class="metric"><span>GPS accuracy</span><strong id="gpsAccuracy">—</strong><small>metres</small></article>
           </div>
-          <p id="mapHint" class="map-hint" hidden>Tap the centre of the green.</p>
+
+          <div class="map-shell">
+            <div id="map" aria-label="Live golf course map"><div id="mapLoading" class="map-loading"><strong>Loading satellite course map…</strong><span>The map requires internet access and must be opened from the published HTTPS app.</span></div></div>
+            <div class="map-actions">
+              <button id="mapStyleButton" class="map-chip secondary" type="button">Street</button>
+              <button id="locateButton" class="round-button" type="button" title="Centre map on your location">◎</button>
+              <button id="setGreenButton" class="map-chip" type="button">Set green</button>
+              <button id="clearGreenButton" class="map-chip secondary" type="button">Clear</button>
+            </div>
+            <p id="mapHint" class="map-hint" hidden>Tap the centre of the green.</p>
+          </div>
+
+          <section class="recommendation-card" aria-live="polite">
+            <div><p class="eyebrow">NEXT SHOT</p><h2 id="nextShotTitle">Mark the green to begin</h2><p id="nextShotDetail">Your location and target will be used to suggest a club.</p></div>
+            <label class="club-select-wrap"><span>Club</span><select id="shotClub" aria-label="Club for current shot"></select></label>
+          </section>
+
+          <div class="shot-controls"><button id="startShotButton" class="primary-button" type="button">Start shot</button><button id="atBallButton" class="primary-button success" type="button" hidden>At ball</button><button id="cancelShotButton" class="secondary-button" type="button" hidden>Cancel</button></div>
+          <section id="activeShotCard" class="active-shot" hidden><div><p class="eyebrow">SHOT ACTIVE</p><strong id="activeShotClub">—</strong></div><p>Walk to your ball, then tap <strong>At ball</strong>.</p></section>
         </div>
 
-        <section class="recommendation-card" aria-live="polite">
-          <div><p class="eyebrow">NEXT SHOT</p><h2 id="nextShotTitle">Mark the green to begin</h2><p id="nextShotDetail">Your location and target will be used to suggest a club.</p></div>
-          <label class="club-select-wrap"><span>Club</span><select id="shotClub" aria-label="Club for current shot"></select></label>
-        </section>
+        <section id="previewRoundRegion" class="preview-region" hidden aria-label="3D hole preview">
+          <div class="preview-status-row">
+            <span class="preview-badge">DESK PREVIEW</span>
+            <span id="previewMappingStatus">Tee and green loaded</span>
+          </div>
 
-        <div class="shot-controls"><button id="startShotButton" class="primary-button" type="button">Start shot</button><button id="atBallButton" class="primary-button success" type="button" hidden>At ball</button><button id="cancelShotButton" class="secondary-button" type="button" hidden>Cancel</button></div>
-        <section id="activeShotCard" class="active-shot" hidden><div><p class="eyebrow">SHOT ACTIVE</p><strong id="activeShotClub">—</strong></div><p>Walk to your ball, then tap <strong>At ball</strong>.</p></section>
+          <div class="preview-metrics">
+            <article class="preview-metric"><span>Tee to target</span><strong id="previewTargetDistance">—</strong><small>yards</small></article>
+            <article class="preview-metric"><span>Club to target</span><strong id="previewClub">Tap a target</strong><small id="previewClubReason">Uses your expected distances</small></article>
+            <article class="preview-metric"><span>Target to green</span><strong id="previewRemaining">—</strong><small>yards</small></article>
+          </div>
+
+          <div class="preview-map-shell">
+            <div id="preview3dMap" aria-label="Interactive 3D satellite view of the selected hole"></div>
+            <div id="preview3dLoading" class="preview-loading"><strong>Loading 3D hole…</strong><span>Satellite imagery and elevation data require internet access.</span></div>
+            <div class="preview-map-help">Drag to rotate • two-finger drag to tilt • tap to choose a target</div>
+            <div class="preview-map-controls">
+              <button id="teeViewButton" class="preview-control primary" type="button">View from tee</button>
+              <button id="topViewButton" class="preview-control" type="button">Top view</button>
+              <button id="clearTargetButton" class="preview-control" type="button">Clear target</button>
+            </div>
+          </div>
+
+          <div class="preview-target-card" aria-live="polite">
+            <div>
+              <p class="eyebrow">SELECTED TARGET</p>
+              <h2 id="previewTargetTitle">Tap the fairway or green</h2>
+              <p id="previewTargetDetail">The simulated ball starts on the selected tee box. Drag the blue tee marker if calibration is needed.</p>
+            </div>
+            <span id="previewHoleYardage" class="yardage-chip">—</span>
+          </div>
+
+          <div class="preview-note">
+            <strong>Preview calibration</strong>
+            <p>The tee and green are first-pass course mappings based on Lakeview’s official layout and published yardages. The blue tee marker is draggable so you can correct its exact location from the satellite image.</p>
+          </div>
+        </section>
       </section>
 
       <section id="clubsView" class="view" aria-labelledby="clubsTab">
@@ -97,8 +145,10 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script src="./map-bootstrap.js"></script>
   <script src="./app.js"></script>
   <script src="./map-upgrade.js"></script>
+  <script src="./preview-3d.js"></script>
 </body>
 </html>
