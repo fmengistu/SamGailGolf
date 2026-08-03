@@ -1,236 +1,863 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0b6b3a">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Fairway Caddie">
-  <meta name="description" content="A personal GPS golf caddie with club recommendations and shot tracking.">
-  <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
-  <link rel="icon" href="./icons/icon-192.png">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIINfQ3ynrFQx03pLI06MZLMfW/5Cl1ts="
-        crossorigin="">
-  <link rel="stylesheet" href="./styles.css">
-  <title>Fairway Caddie</title>
-</head>
-<body>
-  <div id="app">
-    <header class="app-header">
-      <div>
-        <p class="eyebrow">PERSONAL GOLF GPS</p>
-        <h1>Fairway Caddie</h1>
-      </div>
-      <button id="gpsStatus" class="status-pill" type="button" aria-label="GPS status">
-        GPS off
-      </button>
-    </header>
+(() => {
+  "use strict";
 
-    <main>
-      <section id="roundView" class="view active" aria-labelledby="roundTab">
-        <div class="course-picker">
-          <label>
-            <span>Course</span>
-            <select id="courseSelect" aria-label="Golf course">
-              <option value="lakeview">Lakeview Golf Course — Toronto</option>
-              <option value="custom">Custom / Other course</option>
-            </select>
-          </label>
+  const STORAGE_KEY = "fairway-caddie-v1";
+  const YARDS_PER_METRE = 1.0936133;
+
+  const DEFAULT_CLUBS = [
+    { id: "driver", name: "Driver", min: 240, max: 260 },
+    { id: "3wood", name: "3 Wood", min: 220, max: 240 },
+    { id: "5wood", name: "5 Wood", min: 200, max: 220 },
+    { id: "4iron", name: "4 Iron", min: 180, max: 200 },
+    { id: "5iron", name: "5 Iron", min: 175, max: 185 },
+    { id: "6iron", name: "6 Iron", min: 170, max: 180 },
+    { id: "7iron", name: "7 Iron", min: 160, max: 175 },
+    { id: "8iron", name: "8 Iron", min: 150, max: 165 },
+    { id: "9iron", name: "9 Iron", min: 135, max: 150 },
+    { id: "pw", name: "Pitching Wedge", min: 125, max: 135 },
+    { id: "gw", name: "Gap Wedge", min: 105, max: 120 },
+    { id: "56", name: "56° Wedge", min: 10, max: 100 }
+  ];
+
+  const defaultState = () => ({
+    settings: {
+      courseId: "lakeview",
+      courseName: "Lakeview Golf Course — Toronto",
+      strategy: "balanced",
+      handedness: "left",
+      holeNumber: 1,
+      holePar: 4,
+      teeName: "White"
+    },
+    green: null,
+    clubs: DEFAULT_CLUBS.map(club => ({ ...club, samples: [] })),
+    shots: [],
+    activeShot: null
+  });
+
+  let state = loadState();
+  let map;
+  let positionMarker;
+  let accuracyCircle;
+  let greenMarker;
+  let targetLine;
+  let watchId = null;
+  let currentPosition = null;
+  let setGreenMode = false;
+  let toastTimer = null;
+  let hasCenteredInitially = false;
+
+  const els = {};
+
+  document.addEventListener("DOMContentLoaded", init);
+
+  function init() {
+    cacheElements();
+    populateHoleNumbers();
+    initializeMap();
+    bindEvents();
+    applyStateToControls();
+    renderAll();
+    registerServiceWorker();
+    startGps();
+  }
+
+  function cacheElements() {
+    [
+      "gpsStatus", "courseSelect", "holeNumber", "holePar", "teeName", "distanceToGreen",
+      "recommendedClub", "recommendationReason", "gpsAccuracy", "locateButton",
+      "setGreenButton", "clearGreenButton", "mapHint", "nextShotTitle",
+      "nextShotDetail", "shotClub", "startShotButton", "atBallButton",
+      "cancelShotButton", "activeShotCard", "activeShotClub", "clubsList",
+      "resetClubsButton", "shotsList", "shotSummary", "exportButton",
+      "courseName", "strategy", "handedness", "importInput", "clearDataButton",
+      "toast", "mapLoading"
+    ].forEach(id => { els[id] = document.getElementById(id); });
+  }
+
+  function populateHoleNumbers() {
+    els.holeNumber.innerHTML = "";
+    for (let number = 1; number <= 18; number += 1) {
+      const option = document.createElement("option");
+      option.value = String(number);
+      option.textContent = String(number);
+      els.holeNumber.appendChild(option);
+    }
+  }
+
+  function initializeMap() {
+    if (!window.L) {
+      if (els.mapLoading) {
+        els.mapLoading.classList.add("error");
+        els.mapLoading.innerHTML = "<strong>Map could not load</strong><span>This usually happens when the app is opened as a file preview instead of from its published HTTPS address, or when the map service is blocked.</span>";
+      }
+      showToast("Map library unavailable. Open the published HTTPS app in Safari.");
+      return;
+    }
+
+    map = L.map("map", {
+      zoomControl: false,
+      attributionControl: true
+    }).setView([43.7, -79.42], 15);
+
+    let loadedTiles = 0;
+    let failedTiles = 0;
+    const tileLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 20,
+      attribution: "&copy; OpenStreetMap contributors"
+    });
+
+    tileLayer.on("tileload", () => {
+      loadedTiles += 1;
+      if (els.mapLoading && loadedTiles >= 1) {
+        els.mapLoading.hidden = true;
+      }
+    });
+
+    tileLayer.on("tileerror", () => {
+      failedTiles += 1;
+      if (els.mapLoading && loadedTiles === 0 && failedTiles >= 3) {
+        els.mapLoading.classList.add("error");
+        els.mapLoading.innerHTML = "<strong>Map tiles are blocked</strong><span>Check the internet connection and open the published HTTPS address in Safari—not the ZIP, Files app, or ChatGPT preview.</span>";
+      }
+    });
+
+    tileLayer.addTo(map);
+    L.control.zoom({ position: "topleft" }).addTo(map);
+
+    map.on("click", event => {
+      if (!setGreenMode) return;
+      setGreen(event.latlng.lat, event.latlng.lng);
+      setGreenMode = false;
+      els.mapHint.hidden = true;
+      els.setGreenButton.textContent = "Set green";
+      showToast("Green centre saved.");
+    });
+
+    if (state.green) {
+      drawGreen();
+    }
+  }
+
+  function bindEvents() {
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.addEventListener("click", () => showView(tab.dataset.view));
+    });
+
+    els.gpsStatus.addEventListener("click", startGps);
+    els.locateButton.addEventListener("click", centreOnPosition);
+    els.setGreenButton.addEventListener("click", () => {
+      setGreenMode = !setGreenMode;
+      els.mapHint.hidden = !setGreenMode;
+      els.setGreenButton.textContent = setGreenMode ? "Cancel" : "Set green";
+    });
+    els.clearGreenButton.addEventListener("click", clearGreen);
+
+    els.courseSelect.addEventListener("change", () => {
+      if (els.courseSelect.value === "lakeview") {
+        els.courseName.value = "Lakeview Golf Course — Toronto";
+      } else if (!els.courseName.value.trim() || els.courseName.value.includes("Lakeview")) {
+        els.courseName.value = "My Course";
+      }
+      saveSettingsFromControls();
+    });
+    els.holeNumber.addEventListener("change", saveSettingsFromControls);
+    els.holePar.addEventListener("change", saveSettingsFromControls);
+    els.teeName.addEventListener("change", saveSettingsFromControls);
+    els.courseName.addEventListener("change", () => {
+      els.courseSelect.value = "custom";
+      saveSettingsFromControls();
+    });
+    els.strategy.addEventListener("change", () => {
+      saveSettingsFromControls();
+      updateRecommendation();
+    });
+    els.handedness.addEventListener("change", saveSettingsFromControls);
+
+    els.startShotButton.addEventListener("click", startShot);
+    els.atBallButton.addEventListener("click", finishShot);
+    els.cancelShotButton.addEventListener("click", cancelShot);
+
+    els.resetClubsButton.addEventListener("click", resetClubs);
+    els.exportButton.addEventListener("click", exportData);
+    els.importInput.addEventListener("change", importData);
+    els.clearDataButton.addEventListener("click", clearAllData);
+
+    window.addEventListener("online", () => showToast("Internet connection restored."));
+    window.addEventListener("offline", () => showToast("Offline: GPS and saved data still work; map tiles may be unavailable."));
+  }
+
+  function applyStateToControls() {
+    const { settings } = state;
+    els.courseSelect.value = settings.courseId || (
+      String(settings.courseName || "").toLowerCase().includes("lakeview") ? "lakeview" : "custom"
+    );
+    els.holeNumber.value = String(settings.holeNumber);
+    els.holePar.value = String(settings.holePar);
+    els.teeName.value = settings.teeName;
+    els.courseName.value = settings.courseName;
+    els.strategy.value = settings.strategy;
+    els.handedness.value = settings.handedness;
+  }
+
+  function saveSettingsFromControls() {
+    const selectedCourseId = els.courseSelect.value;
+    const selectedCourseName = selectedCourseId === "lakeview"
+      ? "Lakeview Golf Course — Toronto"
+      : (els.courseName.value.trim() || "My Course");
+
+    state.settings = {
+      courseId: selectedCourseId,
+      courseName: selectedCourseName,
+      strategy: els.strategy.value,
+      handedness: els.handedness.value,
+      holeNumber: Number(els.holeNumber.value),
+      holePar: Number(els.holePar.value),
+      teeName: els.teeName.value
+    };
+    saveState();
+  }
+
+  function showView(viewId) {
+    document.querySelectorAll(".view").forEach(view => {
+      view.classList.toggle("active", view.id === viewId);
+    });
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.classList.toggle("active", tab.dataset.view === viewId);
+    });
+
+    if (viewId === "roundView" && map) {
+      setTimeout(() => map.invalidateSize(), 80);
+    }
+  }
+
+  function startGps() {
+    if (!navigator.geolocation) {
+      setGpsStatus("GPS unavailable", false);
+      showToast("This browser does not provide GPS access.");
+      return;
+    }
+
+    if (watchId !== null) {
+      navigator.geolocation.clearWatch(watchId);
+    }
+
+    setGpsStatus("Locating…", false);
+
+    watchId = navigator.geolocation.watchPosition(
+      handlePosition,
+      handlePositionError,
+      {
+        enableHighAccuracy: true,
+        maximumAge: 3000,
+        timeout: 20000
+      }
+    );
+  }
+
+  function handlePosition(position) {
+    currentPosition = {
+      lat: position.coords.latitude,
+      lng: position.coords.longitude,
+      accuracy: position.coords.accuracy,
+      altitude: position.coords.altitude,
+      heading: position.coords.heading,
+      timestamp: position.timestamp
+    };
+
+    setGpsStatus("GPS live", true);
+    els.gpsAccuracy.textContent = Number.isFinite(currentPosition.accuracy)
+      ? Math.round(currentPosition.accuracy)
+      : "—";
+
+    drawPosition();
+    updateRecommendation();
+
+    if (!hasCenteredInitially && map) {
+      map.setView([currentPosition.lat, currentPosition.lng], 17);
+      hasCenteredInitially = true;
+    }
+  }
+
+  function handlePositionError(error) {
+    const messages = {
+      1: "Location permission was denied. Enable it in Safari settings.",
+      2: "Your location is temporarily unavailable.",
+      3: "GPS request timed out. Tap the GPS status to retry."
+    };
+    setGpsStatus("GPS problem", false);
+    showToast(messages[error.code] || "Could not determine your location.");
+  }
+
+  function setGpsStatus(text, live) {
+    els.gpsStatus.textContent = text;
+    els.gpsStatus.classList.toggle("live", live);
+  }
+
+  function drawPosition() {
+    if (!map || !currentPosition) return;
+
+    const latLng = [currentPosition.lat, currentPosition.lng];
+    const userIcon = L.divIcon({
+      className: "",
+      html: '<div class="user-location"></div>',
+      iconSize: [22, 22],
+      iconAnchor: [11, 11]
+    });
+
+    if (!positionMarker) {
+      positionMarker = L.marker(latLng, { icon: userIcon, zIndexOffset: 1000 }).addTo(map);
+    } else {
+      positionMarker.setLatLng(latLng);
+    }
+
+    if (!accuracyCircle) {
+      accuracyCircle = L.circle(latLng, {
+        radius: currentPosition.accuracy || 10,
+        weight: 1,
+        color: "#1976d2",
+        fillColor: "#1976d2",
+        fillOpacity: 0.10
+      }).addTo(map);
+    } else {
+      accuracyCircle.setLatLng(latLng);
+      accuracyCircle.setRadius(currentPosition.accuracy || 10);
+    }
+
+    drawTargetLine();
+  }
+
+  function centreOnPosition() {
+    if (!map) return;
+    if (!currentPosition) {
+      showToast("Waiting for a GPS location.");
+      startGps();
+      return;
+    }
+    map.setView([currentPosition.lat, currentPosition.lng], Math.max(map.getZoom(), 17));
+  }
+
+  function setGreen(lat, lng) {
+    state.green = { lat, lng };
+    saveState();
+    drawGreen();
+    updateRecommendation();
+  }
+
+  function clearGreen() {
+    state.green = null;
+    saveState();
+
+    if (greenMarker && map) {
+      map.removeLayer(greenMarker);
+      greenMarker = null;
+    }
+    if (targetLine && map) {
+      map.removeLayer(targetLine);
+      targetLine = null;
+    }
+
+    updateRecommendation();
+    showToast("Green marker removed.");
+  }
+
+  function drawGreen() {
+    if (!map || !state.green) return;
+
+    const greenIcon = L.divIcon({
+      className: "",
+      html: '<div class="green-marker"></div>',
+      iconSize: [24, 24],
+      iconAnchor: [6, 21]
+    });
+
+    if (!greenMarker) {
+      greenMarker = L.marker([state.green.lat, state.green.lng], {
+        icon: greenIcon,
+        draggable: true
+      }).addTo(map);
+
+      greenMarker.on("dragend", event => {
+        const point = event.target.getLatLng();
+        state.green = { lat: point.lat, lng: point.lng };
+        saveState();
+        updateRecommendation();
+      });
+    } else {
+      greenMarker.setLatLng([state.green.lat, state.green.lng]);
+    }
+
+    drawTargetLine();
+  }
+
+  function drawTargetLine() {
+    if (!map || !currentPosition || !state.green) return;
+    const points = [
+      [currentPosition.lat, currentPosition.lng],
+      [state.green.lat, state.green.lng]
+    ];
+
+    if (!targetLine) {
+      targetLine = L.polyline(points, {
+        color: "#0b6b3a",
+        weight: 3,
+        opacity: 0.8,
+        dashArray: "7 8"
+      }).addTo(map);
+    } else {
+      targetLine.setLatLngs(points);
+    }
+  }
+
+  function updateRecommendation() {
+    populateClubSelect();
+
+    if (!state.green || !currentPosition) {
+      els.distanceToGreen.textContent = "—";
+      els.recommendedClub.textContent = state.green ? "Waiting for GPS" : "Set green";
+      els.recommendationReason.textContent = state.green
+        ? "Allow location access"
+        : "Tap the map to mark the target";
+      els.nextShotTitle.textContent = state.green ? "Waiting for your location" : "Mark the green to begin";
+      els.nextShotDetail.textContent = "Your location and target will be used to suggest a club.";
+      els.startShotButton.disabled = !currentPosition;
+      return;
+    }
+
+    const metres = distanceMetres(currentPosition, state.green);
+    const yards = Math.round(metres * YARDS_PER_METRE);
+    const recommendation = recommendClub(yards);
+
+    els.distanceToGreen.textContent = String(yards);
+    els.recommendedClub.textContent = recommendation.club.name;
+    els.recommendationReason.textContent = recommendation.reason;
+    els.nextShotTitle.textContent = `${recommendation.club.name} from ${yards} yards`;
+    els.nextShotDetail.textContent = recommendation.detail;
+    els.shotClub.value = recommendation.club.id;
+    els.startShotButton.disabled = false;
+  }
+
+  function recommendClub(distanceYards) {
+    const clubs = state.clubs.map(club => {
+      const learned = learnedMedian(club);
+      const expected = learned ?? ((Number(club.min) + Number(club.max)) / 2);
+      return { club, expected, learned };
+    });
+
+    let selected;
+    const par = Number(state.settings.holePar);
+    const strategy = state.settings.strategy;
+
+    if ((par === 4 || par === 5) && distanceYards > 225) {
+      const preferredId = strategy === "conservative" ? "3wood" : "driver";
+      selected = clubs.find(item => item.club.id === preferredId) || clubs[0];
+    } else {
+      const strategyBias = strategy === "conservative" ? -4 : strategy === "aggressive" ? 4 : 0;
+      const target = Math.max(1, distanceYards + strategyBias);
+      selected = clubs.reduce((best, item) => {
+        const difference = Math.abs(item.expected - target);
+        return !best || difference < best.difference
+          ? { ...item, difference }
+          : best;
+      }, null);
+    }
+
+    const source = selected.learned !== null ? "learned distance" : "expected range";
+    const reason = `${Math.round(selected.expected)} yd ${source}`;
+    const delta = distanceYards - selected.expected;
+    let detail;
+
+    if (Math.abs(delta) <= 8) {
+      detail = "This club's expected result closely matches the target distance.";
+    } else if (delta > 8) {
+      detail = "A full shot may finish short; confirm wind, elevation and hazards before playing.";
+    } else {
+      detail = "This club may finish beyond the target; consider a controlled swing.";
+    }
+
+    return { club: selected.club, reason, detail };
+  }
+
+  function populateClubSelect() {
+    const currentValue = els.shotClub.value;
+    els.shotClub.innerHTML = "";
+
+    state.clubs.forEach(club => {
+      const option = document.createElement("option");
+      option.value = club.id;
+      option.textContent = club.name;
+      els.shotClub.appendChild(option);
+    });
+
+    if (state.clubs.some(club => club.id === currentValue)) {
+      els.shotClub.value = currentValue;
+    }
+  }
+
+  function startShot() {
+    if (!currentPosition) {
+      showToast("A GPS position is required before recording a shot.");
+      startGps();
+      return;
+    }
+
+    const club = state.clubs.find(item => item.id === els.shotClub.value);
+    if (!club) return;
+
+    state.activeShot = {
+      id: crypto.randomUUID ? crypto.randomUUID() : `shot-${Date.now()}`,
+      clubId: club.id,
+      clubName: club.name,
+      start: {
+        lat: currentPosition.lat,
+        lng: currentPosition.lng,
+        accuracy: currentPosition.accuracy,
+        timestamp: Date.now()
+      },
+      hole: Number(state.settings.holeNumber),
+      par: Number(state.settings.holePar),
+      tee: state.settings.teeName,
+      course: state.settings.courseName
+    };
+
+    saveState();
+    renderActiveShot();
+    showToast(`${club.name} shot started.`);
+  }
+
+  function finishShot() {
+    if (!state.activeShot || !currentPosition) return;
+
+    const start = state.activeShot.start;
+    const end = {
+      lat: currentPosition.lat,
+      lng: currentPosition.lng,
+      accuracy: currentPosition.accuracy,
+      timestamp: Date.now()
+    };
+
+    const metres = distanceMetres(start, end);
+    const yards = Math.round(metres * YARDS_PER_METRE);
+    const bearing = calculateBearing(start, end);
+
+    if (yards < 2) {
+      showToast("Move closer to the ball before completing the shot.");
+      return;
+    }
+
+    const qualifiesForLearning =
+      yards >= 15 &&
+      yards <= 350 &&
+      (start.accuracy ?? 999) <= 25 &&
+      (end.accuracy ?? 999) <= 25;
+
+    const shot = {
+      ...state.activeShot,
+      end,
+      distanceYards: yards,
+      bearing,
+      qualifiesForLearning,
+      completedAt: Date.now()
+    };
+
+    state.shots.unshift(shot);
+    state.shots = state.shots.slice(0, 500);
+
+    if (qualifiesForLearning) {
+      const club = state.clubs.find(item => item.id === shot.clubId);
+      if (club) {
+        club.samples = Array.isArray(club.samples) ? club.samples : [];
+        club.samples.push(yards);
+        club.samples = club.samples.slice(-50);
+      }
+    }
+
+    state.activeShot = null;
+    saveState();
+    renderAll();
+    showToast(`${shot.clubName}: ${yards} yards recorded.`);
+  }
+
+  function cancelShot() {
+    state.activeShot = null;
+    saveState();
+    renderActiveShot();
+    showToast("Shot cancelled.");
+  }
+
+  function renderAll() {
+    renderActiveShot();
+    renderClubs();
+    renderShots();
+    populateClubSelect();
+    updateRecommendation();
+  }
+
+  function renderActiveShot() {
+    const active = Boolean(state.activeShot);
+    els.activeShotCard.hidden = !active;
+    els.atBallButton.hidden = !active;
+    els.cancelShotButton.hidden = !active;
+    els.startShotButton.hidden = active;
+
+    if (active) {
+      els.activeShotClub.textContent = state.activeShot.clubName;
+      els.shotClub.value = state.activeShot.clubId;
+    }
+  }
+
+  function renderClubs() {
+    els.clubsList.innerHTML = "";
+
+    state.clubs.forEach(club => {
+      const row = document.createElement("article");
+      row.className = "club-row";
+
+      const title = document.createElement("h3");
+      title.textContent = club.name;
+
+      const minLabel = createNumberInput("Min", club.min, value => {
+        club.min = value;
+        saveState();
+        updateRecommendation();
+      });
+
+      const maxLabel = createNumberInput("Max", club.max, value => {
+        club.max = value;
+        saveState();
+        updateRecommendation();
+      });
+
+      const learnedBox = document.createElement("div");
+      learnedBox.className = "learned";
+      const median = learnedMedian(club);
+      const count = Array.isArray(club.samples) ? club.samples.length : 0;
+      const confidence = count >= 15 ? "High" : count >= 6 ? "Medium" : count > 0 ? "Low" : "Not learned";
+      learnedBox.innerHTML = `
+        <strong>${median === null ? "—" : `${Math.round(median)} yd`}</strong>
+        <small>${confidence} · ${count} shot${count === 1 ? "" : "s"}</small>
+      `;
+
+      row.append(title, minLabel, maxLabel, learnedBox);
+      els.clubsList.appendChild(row);
+    });
+  }
+
+  function createNumberInput(labelText, value, onChange) {
+    const label = document.createElement("label");
+    const caption = document.createElement("span");
+    caption.textContent = labelText;
+    const input = document.createElement("input");
+    input.type = "number";
+    input.min = "0";
+    input.max = "400";
+    input.inputMode = "numeric";
+    input.value = String(value);
+    input.addEventListener("change", () => {
+      const number = Number(input.value);
+      if (Number.isFinite(number)) onChange(number);
+    });
+    label.append(caption, input);
+    return label;
+  }
+
+  function renderShots() {
+    const shots = state.shots;
+    const totalYards = shots.reduce((sum, shot) => sum + Number(shot.distanceYards || 0), 0);
+    const learnedCount = shots.filter(shot => shot.qualifiesForLearning).length;
+
+    els.shotSummary.innerHTML = `
+      <article class="metric"><span>Shots</span><strong>${shots.length}</strong><small>recorded</small></article>
+      <article class="metric"><span>Distance</span><strong>${totalYards.toLocaleString()}</strong><small>yards</small></article>
+      <article class="metric"><span>Learned</span><strong>${learnedCount}</strong><small>accepted</small></article>
+    `;
+
+    els.shotsList.innerHTML = "";
+
+    if (!shots.length) {
+      els.shotsList.innerHTML = '<div class="empty-state">No shots recorded yet. Start a shot from the Round screen.</div>';
+      return;
+    }
+
+    shots.forEach(shot => {
+      const row = document.createElement("article");
+      row.className = "shot-row";
+      const date = new Date(shot.completedAt);
+      const bearing = Number.isFinite(shot.bearing) ? `${Math.round(shot.bearing)}°` : "—";
+      row.innerHTML = `
+        <h3>${escapeHtml(shot.clubName)}</h3>
+        <div class="shot-distance">${shot.distanceYards} yd</div>
+        <div class="shot-meta">
+          ${escapeHtml(shot.course || "My Course")} · Hole ${shot.hole} · ${date.toLocaleString()} · ${bearing}
+          ${shot.qualifiesForLearning ? " · Learned" : " · Excluded"}
         </div>
+      `;
+      els.shotsList.appendChild(row);
+    });
+  }
 
-        <div class="hole-bar">
-          <label>
-            <span>Hole</span>
-            <select id="holeNumber" aria-label="Hole number"></select>
-          </label>
-          <label>
-            <span>Par</span>
-            <select id="holePar" aria-label="Par">
-              <option value="3">3</option>
-              <option value="4" selected>4</option>
-              <option value="5">5</option>
-            </select>
-          </label>
-          <label>
-            <span>Tee</span>
-            <select id="teeName" aria-label="Tee">
-              <option>White</option>
-              <option>Blue</option>
-              <option>Black</option>
-              <option>Red</option>
-              <option>Gold</option>
-            </select>
-          </label>
-        </div>
+  function resetClubs() {
+    if (!window.confirm("Reset expected distances and remove learned club samples?")) return;
+    state.clubs = DEFAULT_CLUBS.map(club => ({ ...club, samples: [] }));
+    saveState();
+    renderAll();
+    showToast("Club distances reset.");
+  }
 
-        <div class="metric-grid">
-          <article class="metric">
-            <span>To green</span>
-            <strong id="distanceToGreen">—</strong>
-            <small>yards</small>
-          </article>
-          <article class="metric">
-            <span>Recommended</span>
-            <strong id="recommendedClub">Set green</strong>
-            <small id="recommendationReason">Tap the map to mark the target</small>
-          </article>
-          <article class="metric">
-            <span>GPS accuracy</span>
-            <strong id="gpsAccuracy">—</strong>
-            <small>metres</small>
-          </article>
-        </div>
+  function exportData() {
+    const payload = {
+      app: "Fairway Caddie",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      data: state
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `fairway-caddie-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    showToast("Backup exported.");
+  }
 
-        <div class="map-shell">
-          <div id="map" aria-label="Live golf course map"></div>
-          <div class="map-actions">
-            <button id="locateButton" class="round-button" type="button" title="Centre map on your location">◎</button>
-            <button id="setGreenButton" class="map-chip" type="button">Set green</button>
-            <button id="clearGreenButton" class="map-chip secondary" type="button">Clear</button>
-          </div>
-          <p id="mapHint" class="map-hint" hidden>Tap the centre of the green.</p>
-        </div>
+  async function importData(event) {
+    const [file] = event.target.files;
+    if (!file) return;
 
-        <section class="recommendation-card" aria-live="polite">
-          <div>
-            <p class="eyebrow">NEXT SHOT</p>
-            <h2 id="nextShotTitle">Mark the green to begin</h2>
-            <p id="nextShotDetail">Your location and target will be used to suggest a club.</p>
-          </div>
-          <label class="club-select-wrap">
-            <span>Club</span>
-            <select id="shotClub" aria-label="Club for current shot"></select>
-          </label>
-        </section>
+    try {
+      const content = await file.text();
+      const parsed = JSON.parse(content);
+      const imported = parsed.data || parsed;
+      if (!imported.settings || !Array.isArray(imported.clubs) || !Array.isArray(imported.shots)) {
+        throw new Error("Invalid backup");
+      }
+      state = imported;
+      state.activeShot = null;
+      saveState();
+      applyStateToControls();
+      drawGreen();
+      renderAll();
+      showToast("Backup imported.");
+    } catch {
+      showToast("This file is not a valid Fairway Caddie backup.");
+    } finally {
+      event.target.value = "";
+    }
+  }
 
-        <div class="shot-controls">
-          <button id="startShotButton" class="primary-button" type="button">Start shot</button>
-          <button id="atBallButton" class="primary-button success" type="button" hidden>At ball</button>
-          <button id="cancelShotButton" class="secondary-button" type="button" hidden>Cancel</button>
-        </div>
+  function clearAllData() {
+    if (!window.confirm("Delete your club profile, green marker and all recorded shots?")) return;
+    state = defaultState();
+    saveState();
+    applyStateToControls();
+    clearGreenLayersOnly();
+    renderAll();
+    showToast("Local data deleted.");
+  }
 
-        <section id="activeShotCard" class="active-shot" hidden>
-          <div>
-            <p class="eyebrow">SHOT ACTIVE</p>
-            <strong id="activeShotClub">—</strong>
-          </div>
-          <p>Walk to your ball, then tap <strong>At ball</strong>.</p>
-        </section>
-      </section>
+  function clearGreenLayersOnly() {
+    if (greenMarker && map) map.removeLayer(greenMarker);
+    if (targetLine && map) map.removeLayer(targetLine);
+    greenMarker = null;
+    targetLine = null;
+  }
 
-      <section id="clubsView" class="view" aria-labelledby="clubsTab">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">YOUR BAG</p>
-            <h2>Club distances</h2>
-          </div>
-          <button id="resetClubsButton" class="text-button" type="button">Reset defaults</button>
-        </div>
-        <p class="section-copy">
-          Expected ranges start with your current numbers. Qualifying shots gradually build a learned median.
-        </p>
-        <div id="clubsList" class="stack-list"></div>
-      </section>
+  function learnedMedian(club) {
+    const samples = Array.isArray(club.samples) ? club.samples : [];
+    if (samples.length < 3) return null;
 
-      <section id="shotsView" class="view" aria-labelledby="shotsTab">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">ROUND HISTORY</p>
-            <h2>Recorded shots</h2>
-          </div>
-          <button id="exportButton" class="text-button" type="button">Export</button>
-        </div>
-        <div id="shotSummary" class="metric-grid compact"></div>
-        <div id="shotsList" class="stack-list"></div>
-      </section>
+    const expectedMidpoint = (Number(club.min) + Number(club.max)) / 2;
+    const filtered = samples
+      .filter(value => value >= Math.max(5, expectedMidpoint * 0.55) && value <= expectedMidpoint * 1.45)
+      .sort((a, b) => a - b);
 
-      <section id="settingsView" class="view" aria-labelledby="settingsTab">
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">PERSONAL APP</p>
-            <h2>Settings</h2>
-          </div>
-        </div>
+    if (filtered.length < 3) return null;
+    const middle = Math.floor(filtered.length / 2);
+    return filtered.length % 2
+      ? filtered[middle]
+      : (filtered[middle - 1] + filtered[middle]) / 2;
+  }
 
-        <div class="form-card">
-          <label>
-            <span>Custom course name</span>
-            <input id="courseName" type="text" value="My Course" autocomplete="off">
-          </label>
-          <label>
-            <span>Playing style</span>
-            <select id="strategy">
-              <option value="conservative">Conservative</option>
-              <option value="balanced" selected>Balanced</option>
-              <option value="aggressive">Aggressive</option>
-            </select>
-          </label>
-          <label>
-            <span>Handedness</span>
-            <select id="handedness">
-              <option value="left" selected>Left-handed</option>
-              <option value="right">Right-handed</option>
-            </select>
-          </label>
-        </div>
+  function distanceMetres(a, b) {
+    const earthRadius = 6371000;
+    const lat1 = degreesToRadians(a.lat);
+    const lat2 = degreesToRadians(b.lat);
+    const deltaLat = degreesToRadians(b.lat - a.lat);
+    const deltaLng = degreesToRadians(b.lng - a.lng);
 
-        <div class="form-card">
-          <h3>Install on iPhone</h3>
-          <ol>
-            <li>Host this folder on an HTTPS website.</li>
-            <li>Open the address in Safari.</li>
-            <li>Tap Share → Add to Home Screen.</li>
-            <li>Allow location access while using the app.</li>
-          </ol>
-        </div>
+    const sinLat = Math.sin(deltaLat / 2);
+    const sinLng = Math.sin(deltaLng / 2);
+    const value = sinLat * sinLat +
+      Math.cos(lat1) * Math.cos(lat2) * sinLng * sinLng;
 
-        <div class="form-card">
-          <h3>Data</h3>
-          <p>Your profile and shots remain in this browser on this device.</p>
-          <div class="button-row">
-            <label class="secondary-button file-button">
-              Import backup
-              <input id="importInput" type="file" accept="application/json" hidden>
-            </label>
-            <button id="clearDataButton" class="danger-button" type="button">Delete local data</button>
-          </div>
-        </div>
+    return earthRadius * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+  }
 
-        <div class="notice">
-          <strong>Competition notice</strong>
-          <p>Club and strategy recommendations may not be permitted during competition. Use only features allowed by the applicable Rules and Local Rules.</p>
-        </div>
-      </section>
-    </main>
+  function calculateBearing(a, b) {
+    const lat1 = degreesToRadians(a.lat);
+    const lat2 = degreesToRadians(b.lat);
+    const deltaLng = degreesToRadians(b.lng - a.lng);
+    const y = Math.sin(deltaLng) * Math.cos(lat2);
+    const x = Math.cos(lat1) * Math.sin(lat2) -
+      Math.sin(lat1) * Math.cos(lat2) * Math.cos(deltaLng);
+    return (radiansToDegrees(Math.atan2(y, x)) + 360) % 360;
+  }
 
-    <nav class="tab-bar" aria-label="Primary navigation">
-      <button id="roundTab" class="tab active" data-view="roundView" type="button">
-        <span aria-hidden="true">⌖</span>
-        <small>Round</small>
-      </button>
-      <button id="clubsTab" class="tab" data-view="clubsView" type="button">
-        <span aria-hidden="true">♧</span>
-        <small>Clubs</small>
-      </button>
-      <button id="shotsTab" class="tab" data-view="shotsView" type="button">
-        <span aria-hidden="true">↗</span>
-        <small>Shots</small>
-      </button>
-      <button id="settingsTab" class="tab" data-view="settingsView" type="button">
-        <span aria-hidden="true">⚙</span>
-        <small>Settings</small>
-      </button>
-    </nav>
+  function degreesToRadians(value) {
+    return value * Math.PI / 180;
+  }
 
-    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-  </div>
+  function radiansToDegrees(value) {
+    return value * 180 / Math.PI;
+  }
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-          crossorigin=""></script>
-  <script src="./app.js"></script>
-</body>
-</html>
+  function loadState() {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return defaultState();
+      const parsed = JSON.parse(saved);
+      return {
+        ...defaultState(),
+        ...parsed,
+        settings: { ...defaultState().settings, ...(parsed.settings || {}) },
+        clubs: Array.isArray(parsed.clubs) ? parsed.clubs : defaultState().clubs,
+        shots: Array.isArray(parsed.shots) ? parsed.shots : []
+      };
+    } catch {
+      return defaultState();
+    }
+  }
+
+  function saveState() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function showToast(message) {
+    window.clearTimeout(toastTimer);
+    els.toast.textContent = message;
+    els.toast.hidden = false;
+    toastTimer = window.setTimeout(() => {
+      els.toast.hidden = true;
+    }, 3300);
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function registerServiceWorker() {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("./service-worker.js").catch(() => {
+        // The app still works without offline shell caching.
+      });
+    }
+  }
+})();

@@ -67,6 +67,13 @@ The app must be hosted over HTTPS for iPhone location access and Home Screen ins
 
 Do not upload the containing `fairway-caddie-pwa` folder as one nested folder unless you configure Pages for it. Upload the files inside it.
 
+
+## Blank map
+
+A blank map normally means the app is being viewed inside ChatGPT, a ZIP preview, the iPhone Files app, or another file viewer. Those views may display the HTML layout but block the external map library and map tiles.
+
+The map works only after the app files are published to an HTTPS web address and that address is opened in Safari. OpenStreetMap tiles also require an internet connection.
+
 ## First on-course use
 
 1. Open **Settings** and enter the course name.

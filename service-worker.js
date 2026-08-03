@@ -1,4 +1,4 @@
-const CACHE_NAME = "fairway-caddie-shell-v1";
+const CACHE_NAME = "fairway-caddie-shell-v3";
 const APP_SHELL = [
   "./",
   "./index.html",
